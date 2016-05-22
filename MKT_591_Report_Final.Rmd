@@ -1,0 +1,527 @@
+---
+title: "MKT 591 - Report"
+author: 'Team C-02: Siddharth Srivastava, Bhargava Sukkala, Vikram Vegesna, Tejas
+  Mehta'
+output:
+  pdf_document:
+    number_section: yes
+    toc: yes
+    toc_depth: 2
+---
+
+\newpage
+
+# Executive Summary
+
+The marketing problem chosen was a sales prediciton problem for a pharmacy. The objective of the problem was restated and a lateral approach was adopted to observe *Sales* and *Customer* behavior as a function of *Competitor's parameters* and *Holidays*, individually.
+
+The data was dealt with at an aggregate level, eliminating the inclusion of time dimension so as to study the general impact of *Competition* and *Holidays* on *Store performance*.
+
+The *Predictive Analytics* method used here was *Regression*. Several models were built using two very powerful *Machine Learning* algorithms: *Random Forests* and *Linear Regression*.
+
+The models were evaluated based on accuracy of prediction given by *Root Mean Squared Error*. Apart from the *RMSE* value, models were evaulated based on the level of insights provided by them. *Linear Regression* models were evaluated based on the *R-squared* value while *RandomForest* models were evaulated based on *Predictor Importance* scores.
+
+Insights from both type of models were considered for final analysis. Analysis results and Recommendations were provided based on findings from studying both the models back and forth and combining their results. 
+
+\newpage
+
+
+# Problem Description
+
+The problem chosen was [Rossmann Store Sales]("https://www.kaggle.com/c/rossmann-store-sales"), a sales prediction problem posted on **kaggle**. [Rossmann Pharmacy]("https://www.rossmann.de/verbraucherportal.html") wanted to forecast sales for it's 1115 stores using historical data about *Sales, Customers, Holidays, Stores, Promotion and Competition*.
+
+After observing the data, we realized that using *Competition, Sales* and *Holiday* data to determine consumers would be a better marketing problem rather than an ordinary sales forecast. So we disregarded time information to study the general impact of *Competition, Promotion and Holidays* on *Sales and Customers*. We also performed validation on the train set and ignored the test set as a consequence of the new objective.
+
+## Objective
+*The objective was to use Competition, Promotion and Holiday information to forecast footfalls and sales for [Rossmann Pharmacy]("https://www.rossmann.de/verbraucherportal.html") at an aggrate year level and suggest any areas for improvement  based on our models.*
+
+\newpage
+
+# Data 
+
+## Description
+
+We were provided with 2 datasets:
+
+1. Train: Comprised of daily Sales
+
+  * `Store` - Unique id for each store
+  * `DayofWeek` - Day of Week such as Monday, Tuesday, etc.
+  * `Date` - Date of Sales.
+  * `Sales` - the turnover for any given day
+  * `Customers` - Number of Customers
+  * `Open` - 0: Store closed on that day, 1: Store open on that day
+  * `Promo` - Indicates if a store was running a promotion on that day. 0 or 1
+  * `StateHoliday` - 0: No Holiday, a: Public Holiday, b: Easter Holiday, c: Christmas Holiday
+  * `SchoolHoliday` - Indicates if a store was impacted by closure of public schools. 0 or 1.
+
+  
+2. Store: Attribute for each store
+
+  * `Store` - Unique id for each store
+  * `StoreType` - differentiates between 4 different store models: a, b, c, d
+  * `Assortment` -  describes an assortment level: a = basic, b = extra, c = extended
+  * `CompetitionDistance` - distance in meters to the nearest competitor store
+  * `CompetitionOpenSince[Month/Year]` - gives the approximate year and month of the time the nearest competitor was opened
+  * `Promo2` - Promo2 is a continuing and consecutive promotion for some stores: 0 = store is not participating, 1 = store is participating
+  * `Promo2Since[Year/Week]` - describes the year and calendar week when the store started participating in Promo2
+  * `PromoInterval` - describes the consecutive intervals Promo2 is started, naming the months the promotion is started anew. E.g. "Feb,May,Aug,Nov" means each round starts in February, May, August, November of any given year for that store
+
+## Preprocesing
+
+### For Competition Analysis
+
+We removed `Date`, `Promo`, `StateHoliday`, `SchoolHoliday` and `DayofWeek` attributes in the **Train** dataset,  and *aggregated* `Sales` and `Customers` for each 1115 individual `Store`
+
+The **Store** dataset consists of attributes for each 1115 stores. Since we decided to disregard time related information for our analysis, we removed `Promo2Since[Year/Week]` and `PromoInterval`from **Store** dataset. We also converted the `CompetitionOpenSince[Month/Year]` variable to a continuous `Comp_Since` age (*in number of days*) attribute by subtracting the open date of the Competitor from the *Current Date*.
+
+After making the specified changes on the **Train** and **Store** datasets, we merged the two datasets to get `Customer` and `Sales` for each store with `Comp_Since` and `CompetitionDistance` along with other `Store` related attribtues.
+
+Lastly, we replaced missing values for `CompetitionDistance` and `Comp_since` with 0, implying no competition.
+
+Split the **Merged** dataset into train and validation sets with a 75:25 split.
+
+### For Holiday and Promotion Analyis
+We aggregated `Sales` and `Customer` for all combinations of `Store`, `StateHoliday`, `SchoolHoliday`, and `Promo` to study impact of holiday on sales and customers.
+
+Split the aggregated **Train** dataset into train and validation sets with a 75:25 split. 
+
+```{r warning = FALSE, error = FALSE, echo = FALSE, message=FALSE}
+library(data.table)
+library(e1071)
+library(dplyr)
+library(randomForest)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(ggthemes)
+library(lubridate)
+library(zoo)
+library(psych)
+library(corrplot)
+library(hydroGOF)
+library(gpairs)
+```
+
+```{r warning = FALSE, error = FALSE, echo = FALSE, message=FALSE}
+train <- fread("train.csv", stringsAsFactors = T)
+store <- fread("store.csv", stringsAsFactors = T)
+```
+
+```{r warning=FALSE, error=FALSE,echo=FALSE, message=FALSE}
+train$Open <- as.factor(train$Open)
+train$DayOfWeek <- as.factor(train$DayOfWeek)
+train$Promo <- as.factor(train$Promo)
+train$Date <- as.Date(train$Date)
+train$DayOfWeek <- NULL
+train$Date <- NULL
+
+store$CompetitionOpenSinceMonth <- str_pad(store$CompetitionOpenSinceMonth, width = 2, side = "left", pad = "0")
+store <- unite(store, Comp_Since, CompetitionOpenSinceMonth, CompetitionOpenSinceYear, sep= "-")
+store$Comp_Since <- as.yearmon(store$Comp_Since, format = "%m-%Y")
+store$Comp_Since <- as.Date.yearmon(store$Comp_Since)
+store$Comp_Since <- today() - store$Comp_Since
+store$Comp_Since <- as.integer(store$Comp_Since)
+store$Promo2SinceWeek <- NULL
+store$PromoInterval <- NULL
+store$Promo2SinceYear <- NULL
+store$Promo2 <- as.factor(store$Promo2)
+
+train_comp <- train %>% select(Store, Customers, Sales)
+train_comp <- train_comp %>% group_by(Store) %>% summarise_each(funs(sum))
+
+store_comp <- train_comp %>% inner_join(store, by = "Store")
+store_comp[is.na(store_comp),] <- 0
+
+index <- sample(nrow(store_comp), nrow(store_comp)*0.75)
+st_comp <- store_comp[index,]
+st_compv <- store_comp[-index,]
+
+# Code to create train_store merged dataset
+
+train_hol <- train %>% group_by(Store, StateHoliday, SchoolHoliday, Promo, Open) %>% summarise_each(funs(sum))
+
+train_hol[is.na(train_hol$Comp_since),] <- 0
+
+index1 <- sample(nrow(train_hol), nrow(train_hol)*0.75)
+tr_hol <- train_hol[index1,]
+tr_holv <- train_hol[-index1,]
+
+# Code to create the aggregated dataset
+```
+
+## Summary Statistics
+
+### Merged dataset
+```{r echo= TRUE}
+summary(store_comp)
+```
+
+Plots
+
+```{r echo= FALSE, warning=FALSE, error= FALSE, message= FALSE, fig.height=3, fig.width=3.3}
+ggplot(store_comp, aes(x=Sales, y = CompetitionDistance, col = StoreType)) + geom_point(alpha = 0.4) + ggtitle("Sales vs Competitor Distance")
+
+ggplot(store_comp, aes(x=Sales, y = Comp_Since, col = StoreType)) + geom_point(alpha = 0.4) + ggtitle("Sales vs Competitor Age")
+
+ggplot(store_comp, aes(x=Customers, y = CompetitionDistance, col = StoreType)) + geom_point(alpha = 0.4) + ggtitle("Customer vs Competitor Distance")
+
+ggplot(store_comp, aes(x=Customers, y = Comp_Since, col = StoreType)) + geom_point(alpha = 0.4) + ggtitle("Cusomter vs Competitor Age")
+```
+
+
+### Train dataset
+```{r echo= TRUE}
+summary(train_hol)
+```
+Plots
+```{r echo= FALSE, warning=FALSE, error= FALSE, message= FALSE, fig.height=2, fig.width=3.3}
+
+ggplot(train_hol, aes(x=StateHoliday, y = Sales, col = Promo)) + geom_point(alpha = 0.4) + ggtitle("Sales on Holidays")
+
+ggplot(train_hol, aes(x=StateHoliday, y = Customers, col = Promo)) + geom_point(alpha = 0.4) + ggtitle("Footfalls on Holidays")
+```
+
+\newpage
+
+
+# Models
+
+## RandomForest
+
+The motivation behind using RandomForest was to use decision trees to perform regression as we have majority *Categorical* variables.
+
+However, using *Classification and Regression Tree* can be misleading and lead to overfitting owing to the small size of the dataset. Hence, we decided to use *RandomForest* for regression.
+
+Measure of accuracy was *Root Mean Squared Error* between the predicted result and the validation set.
+
+### Competition Analysis
+
+We created a *RandomForest* model for `Sales` by using the predictors `CompetitionDistance`, `Comp_Since`, `Assortment`, `StoreType` and `Promo2` with 500 trees.
+
+```{r results = 'hide', warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE}
+rf_Sales <- randomForest(Sales ~ CompetitionDistance + Comp_Since + StoreType + Assortment + Promo2 , data = st_comp, ntree = 500)
+```
+
+```{r echo = FALSE, warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE, fig.height= 3, fig.width= 6}
+varImpPlot(rf_Sales)
+```
+
+The rmse of the model is: 
+
+```{r echo = FALSE , warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE}
+pred2 <- predict(rf_Sales, st_compv)
+rmse(pred2, st_compv$Sales)
+```
+
+We created another *RandomForest* model for `Customers` by using the predictors `CompetitionDistance`, `Comp_Since`, `Assortment`, `StoreType` and `Promo2` with 500 trees.
+
+```{r results = 'hide', warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE}
+rf_Customers <- randomForest(Customers ~ CompetitionDistance + Comp_Since + StoreType + Assortment + Promo2 , data = st_comp, ntree = 500)
+```
+
+```{r echo = FALSE, warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE, fig.height= 3, fig.width= 6}
+varImpPlot(rf_Customers)
+```
+
+The rmse of the model is: 
+
+```{r echo = FALSE , warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE}
+pred4 <- predict(rf_Customers, st_compv)
+rmse(pred4, st_compv$Customers)
+```
+
+### Holiday and Promotions Analysis
+
+We created a *RandomForest* model for `Sales` by using the predictors `StaeHoliday`, `SchoolHoliday`, and `Promo` with 500 trees.
+
+
+```{r results = 'hide', warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE}
+rf_sales_hol <- randomForest(Sales ~ StateHoliday + SchoolHoliday + Promo, data = tr_hol, ntree = 500)
+```
+
+```{r echo = FALSE, warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE, fig.height= 3, fig.width= 6}
+varImpPlot(rf_sales_hol)
+```
+
+The rmse of the model is:
+
+```{r echo = FALSE , warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE}
+pred7 <- predict(rf_sales_hol, tr_holv)
+rmse(pred7,tr_holv$Sales)
+```
+
+
+We created a *RandomForest* model for `Customers` by using the predictors `StaeHoliday`, `SchoolHoliday`, and `Promo` with 500 trees.
+
+```{r results = 'hide', warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE}
+rf_cust_hol <- randomForest(Customers ~ StateHoliday + SchoolHoliday + Promo, data = tr_hol, ntree = 500)
+```
+
+```{r echo = FALSE, warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE, fig.height= 3, fig.width= 6}
+varImpPlot(rf_cust_hol)
+```
+
+The rmse of the model is:
+
+```{r echo = FALSE , warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE}
+pred8 <- predict(rf_cust_hol, tr_holv)
+rmse(pred8,tr_holv$Customers)
+```
+
+
+## Linear Regression
+
+The motivation behind using *Linear Regression* model was the concept of parsimony. Owing to less but meaningful attributes and normalized data, linear regression was a very powerful model that could explain the relationship between the dependent variables, `Sales` and `Customers`, with the independent variables in both the data sets.
+
+Measure of accuracy was *Root Mean Squared Error* between the predicted result and the validation set.
+
+### Competition Analysis
+
+We created a *Linear Regression* model for `Sales` by using the predictors `CompetitionDistance`, `Comp_Since`, `Assortment`, `StoreType` and `Promo2`.
+
+```{r results = 'hide', warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE}
+lm_Sales <- lm(Sales ~ CompetitionDistance + Comp_Since + StoreType + Assortment + Promo2 , data = st_comp)
+```
+
+```{r echo = TRUE, warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE}
+summary(lm_Sales)
+```
+
+The rmse of the model is: 
+
+```{r echo = FALSE , warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE}
+pred1 <- predict(lm_Sales, st_compv)
+rmse(pred1, st_compv$Sales)
+```
+
+We created another *Linear Regression* model for `Customers` by using the predictors `CompetitionDistance`, `Comp_Since`, `Assortment`, `StoreType` and `Promo2`.
+
+```{r results = 'hide', warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE}
+lm_Cust <- lm(Customers ~ CompetitionDistance + Comp_Since + StoreType + Assortment + Promo2 , data = st_comp)
+```
+
+```{r echo = TRUE, warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE}
+summary(lm_Cust)
+```
+
+The rmse of the model is: 
+
+```{r echo = FALSE , warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE}
+pred3 <- predict(lm_Cust, st_compv)
+rmse(pred3, st_compv$Customers)
+```
+
+### Holiday and Promotions Analysis
+
+We created a *Linear Regression* model for `Sales` by using the predictors `StaeHoliday`, `SchoolHoliday`, and `Promo`.
+
+
+```{r results = 'hide', warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE}
+lm_sales_hol <- lm(Sales ~ StateHoliday + SchoolHoliday + Promo, data = tr_hol)
+```
+
+```{r echo = TRUE, warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE}
+summary(lm_sales_hol)
+```
+
+The rmse of the model is:
+
+```{r echo = FALSE , warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE}
+pred5 <- predict(lm_sales_hol, tr_holv)
+rmse(pred5,tr_holv$Sales )
+```
+
+
+We created a *Linear Regression* model for `Customers` by using the predictors `StaeHoliday`, `SchoolHoliday`, and `Promo`.
+
+```{r results = 'hide', warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE}
+lm_cust_hol <- lm(Customers ~ StateHoliday + SchoolHoliday + Promo, data = tr_hol)
+```
+
+```{r echo = FALSE, warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE}
+summary(lm_cust_hol)
+```
+
+The rmse of the model is:
+
+```{r echo = FALSE , warning=FALSE, error= FALSE, message= FALSE, tidy=TRUE}
+pred6 <- predict(lm_cust_hol, tr_holv)
+rmse(pred6,tr_holv$Customers)
+```
+
+\newpage
+
+# Results
+
+## RandomForest
+
+### Competition Analysis
+
+For `Sales`, *RandomForest* predicts `CompetitionDistance` to be of the highest importance followed by `StoreType` and `Comp_Since`. This implies that `Sales` are influenced by the distance of the competitor's store and it's age.
+
+For `Cusomers`, *RandomForest* predicts `StoreType` to be of the highest importance followed by `CompetitionDistance` and `Assortment`. This implies 
+that Footfalls are influenced by the type of store, it's distance from a competitor store and it's assortment type.
+
+However, based on the rmse values for both the models, the prediction is not significant for `Sales` as much as it is for `Customers`, implying `Competition` better explains footfalls than revenue.
+
+### Holiday and Promotion Analysis
+
+*RandomForest* predicts `StateHoliday` to be of the highest importance followed by `SchoolHoliday` and `Promo` for both `Sales` and `Customers`.
+
+This implies that the nature of the holiday largely impacts sales, but *RandomForest* doesn't provide insights into the holiday types even though the *RMSE* values are low and significant.
+
+## Linear Regression
+
+### Competition Analysis
+
+For `Sales`, *Linear Regression* model doesn't consider *Competition* to be of great importance. Rather, it suggests that `Assortment` levels b and c, `StoreType` b and `Promo2`, promotions largely influence sales.
+The *R-squared* value as well as *RMSE* is low implying the model is insignificant
+
+For `Customers`, *Linear Regression* model considers `CompetitionDistance` to be of great importance along with `Assortment` levels c, `StoreType` b and d, and `Promo2`, promotions largely influence sales.The *R-squared* value as well as *RMSE* is decent enough to be consideredd significant.
+
+*Linear Regression* model too suggests that *Competition* better explains *Footfalls* than *Sales*
+
+### Holiday and Promotion Analysis
+
+*Linear Regression* model considers `StateHoliday`, `SchoolHoliday` and `Promo` as highly significant for both `Sales` and `Customers`.
+
+This implies that the nature of the holiday largely impacts *Sales* and *Footfalls*. The *R-squared* values and *RMSE* values suggest the model to be significant.
+
+## RandomForest vs Linear Regression
+
+Both *RandomForest* and *Linear Regression* models for all objectives have similar *RMSE* values of prediction. However, both present different insights to the problem and it is wiser to consider results of both models to develop insights.
+
+# Managerial Implications
+
+The analysis of both *RandomForest* and *Linear Regression* models suggests that *Competition* affects the *Number of Customers*. The *Regression co-efficient* for `CompetitionDistance` is negative and significant implying that as the distance of the competitor's store increases, the number of customers entering a *Rossmann* store decreases. Also `Customers` are more likely to visit a larger `Assortment` which is significant for `Sales` too.
+
+Also, Holidays largely impact the *Turnover* and *Footfalls*. The co-efficients for all holiday types are negative and significant, implying that *Rossmann's* Sales drop down during holidays.
+
+Our suggestions to the manager would be:
+
+  1. To open more store at an optimal distance from each other to increase market accessibility and presence.
+  2. Customers are likely to go for larger assortments and the store type b. Hence, Rossmann should consider this information if and when it plans to expand.
+  3. Holidays cause loss to Rossmann stores. It could be because the stores are closed during holidays. Rossmann should open 24/7 express stores as it is a pharmacy. Opening such stores would increase it's sales through smaller assortments and account for the losses incurred during the holidays.
+
+\newpage
+
+
+# Appendix I - R code
+
+```{r code, eval= FALSE, warning=FALSE, error=FALSE, message=FALSE, tidy=TRUE}
+library(data.table)
+library(dplyr)
+library(randomForest)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(ggthemes)
+library(psych)
+library(corrplot)
+set.seed(1501)
+
+########################################## Data Loading ###########################################
+
+train <- fread("train.csv", stringsAsFactors = T)
+store <- fread("store.csv", stringsAsFactors = T)
+
+str(train)
+str(store)
+summary(train)
+summary(store)
+
+########################################## Data Cleaning #########################################
+
+train$Open <- as.factor(train$Open)
+train$DayOfWeek <- as.factor(train$DayOfWeek)
+train$Promo <- as.factor(train$Promo)
+train$Date <- as.Date(train$Date)
+train$DayOfWeek <- NULL
+train$Date <- NULL
+
+store$CompetitionOpenSinceMonth <- str_pad(store$CompetitionOpenSinceMonth, width = 2, side = "left", pad = "0")
+store <- unite(store, Comp_Since, CompetitionOpenSinceMonth, CompetitionOpenSinceYear, sep= "-")
+store$Comp_Since <- as.yearmon(store$Comp_Since, format = "%m-%Y")
+store$Comp_Since <- as.Date.yearmon(store$Comp_Since)
+store$Comp_Since <- today() - store$Comp_Since
+store$Comp_Since <- as.integer(store$Comp_Since)
+store$Promo2SinceWeek <- NULL
+store$PromoInterval <- NULL
+store$Promo2SinceYear <- NULL
+store$Promo2 <- as.factor(store$Promo2)
+
+#Create different train sets.
+
+# 1st Train set for Sales ~ Competition
+
+train_comp <- train %>% select(Store, Customers, Sales)
+train_comp <- train_comp %>% group_by(Store) %>% summarise_each(funs(sum))
+
+store_comp <- train_comp %>% inner_join(store, by = "Store")
+
+summary(store_comp)
+store_comp[is.na(store_comp),] <- 0
+
+index <- sample(nrow(store_comp), nrow(store_comp)*0.75)
+st_comp <- store_comp[index,]
+st_compv <- store_comp[-index,]
+
+# Sales and Competition Models
+lm_Sales <- lm(Sales ~ CompetitionDistance + Comp_Since + StoreType + Assortment + factor(Promo2) , data = st_comp)
+summary(lm_Sales)
+rf_Sales <- randomForest(Sales ~ CompetitionDistance + Comp_Since + StoreType + Assortment + Promo2 , data = st_comp, ntree = 500)
+rf_Sales$importance
+varImpPlot(rf_Sales)
+
+pred1 <- predict(lm_Sales, st_compv)
+pred2 <- predict(rf_Sales, st_compv)
+rmse(pred2, st_compv$Sales)
+rmse(pred1, st_compv$Sales)
+
+lm_Cust <- lm(Customers ~ CompetitionDistance + Comp_Since + StoreType + Assortment + factor(Promo2) , data = st_comp)
+summary(lm_Cust)
+rf_Customers <- randomForest(Customers ~ CompetitionDistance + Comp_Since + StoreType + Assortment + Promo2 , data = st_comp)
+rf_Customers$importance
+
+pred3 <- predict(lm_Cust, st_compv)
+pred4 <- predict(rf_Customers, st_compv)
+rmse(pred3, st_compv$Customers)
+rmse(pred4, st_compv$Customers)
+
+
+# 2nd Train set for Holiday Analysis
+
+train_hol <- train %>% group_by(Store, StateHoliday, SchoolHoliday, Promo, Open) %>% summarise_each(funs(sum))
+
+index <- sample(nrow(train_hol), nrow(train_hol)*0.75)
+tr_hol <- train_hol[index,]
+tr_holv <- train_hol[-index,]
+
+lm_sales_hol <- lm(Sales ~ StateHoliday + SchoolHoliday + Promo + Open, data = tr_hol)
+summary(lm_sales_hol)
+pred5 <- predict(lm_sales_hol, tr_holv)
+rmse(pred5,tr_holv$Sales )
+
+lm_cust_hol <- lm(Customers ~ StateHoliday + SchoolHoliday + Promo + Open, data = tr_hol)
+summary(lm_cust_hol)
+pred6 <- predict(lm_cust_hol, tr_holv)
+rmse(pred6,tr_holv$Customers)
+
+rf_sales_hol <- randomForest(Sales ~ StateHoliday + SchoolHoliday + Promo, data = tr_hol, ntree = 500)
+pred7 <- predict(rf_sales_hol, tr_holv)
+rmse(pred7,tr_holv$Sales)
+
+rf_cust_hol <- randomForest(Sales ~ StateHoliday + SchoolHoliday + Promo, data = tr_hol)
+varImpPlot(rf_cust_hol)
+pred8 <- predict(rf_cust_hol, tr_holv)
+rmse(pred8,tr_holv$Customers)
+```
+
+
+\newpage
+
+# Appendix II - R Output
+
+```{r ref.label = 'code', echo = FALSE, warning=FALSE, error=FALSE, message=FALSE, tidy=TRUE}
+```
